@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>День Достона Хайдарова</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; font-family: system-ui, sans-serif; }
+  #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  #ui > * { pointer-events: auto; }
+  .overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.85); color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px; box-sizing: border-box; }
+  .hidden { display: none !important; }
+  button { padding: 12px 24px; margin: 8px; font-size: 18px; cursor: pointer; background: #0a84ff; color: white; border: none; border-radius: 8px; }
+  button:hover { background: #0066cc; }
+  #chatBox { width: 400px; height: 300px; background: #1a1a2e; border: 2px solid #0a84ff; border-radius: 12px; padding: 15px; color: white; }
+  #chatMessages { height: 200px; overflow-y: auto; margin-bottom: 10px; background: #0d0d1a; padding: 8px; border-radius: 6px; }
+  #chatInput { width: 100%; padding: 8px; box-sizing: border-box; }
+  #nameForm input { padding: 8px; margin: 5px; font-size: 16px; width: 200px; }
+  .hint { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); color: #fff; background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 6px; font-size: 14px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="alarmScreen" class="overlay">
+    <h1>⏰ БУДИЛЬНИК!</h1>
+    <p>Нажмите ПРОБЕЛ чтобы выключить</p>
+  </div>
+  <div id="choiceScreen" class="overlay hidden">
+    <h2 id="choiceTitle"></h2>
+    <div id="choiceButtons"></div>
+  </div>
+  <div id="textScreen" class="overlay hidden">
+    <h2 id="textTitle"></h2>
+    <p id="textBody"></p>
+    <button id="textOk">OK</button>
+  </div>
+  <div id="blackScreen" class="overlay hidden" style="background:#000"></div>
+  <div id="nameScreen" class="overlay hidden">
+    <h2>Введите данные для входа</h2>
+    <div id="nameForm">
+      <div>Имя: <input id="firstName" value="Достон"></div>
+      <div>Фамилия: <input id="lastName" value="Хайдаров"></div>
+      <button id="loginBtn">Войти</button>
+    </div>
+  </div>
+  <div id="chatScreen" class="overlay hidden">
+    <h2>Beeline Чаты</h2>
+    <div id="chatBox">
+      <div id="chatMessages">Добро пожаловать, Достон Хайдаров!</div>
+      <input id="chatInput" placeholder="Написать сообщение..." onkeydown="if(event.key==='Enter')sendChat()">
+    </div>
+    <button onclick="closeChat()">Закрыть</button>
+  </div>
+  <div id="hint" class="hint">WASD — движение | E — действие | Пробел — основное действие</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias: true});
+renderer.setSize(innerWidth, innerHeight);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+camera.position.set(0, 1.6, 5);
+
+const light = new THREE.DirectionalLight(0xffffff, 1);
+light.position.set(5, 10, 5);
+scene.add(light);
+scene.add(new THREE.AmbientLight(0x404040));
+
+// Player
+const player = new THREE.Group();
+const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1, 4, 8), new THREE.MeshLambertMaterial({color: 0x444444}));
+body.position.y = 1;
+player.add(body);
+scene.add(player);
+
+let state = 'alarm';
+let clothes = null;
+let shoes = null;
+let keys = {};
+let velocity = new THREE.Vector3();
+let carMode = false;
+let currentCar = null;
+let cityCars = [];
+let sceneObjects = [];
+
+function clearScene() {
+  sceneObjects.forEach(o => scene.remove(o));
+  sceneObjects = [];
+  cityCars = [];
+}
+
+function addBox(w, h, d, color, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({color}));
+  m.position.set(x, y, z);
+  scene.add(m);
+  sceneObjects.push(m);
+  return m;
+}
+
+// Alarm sound
+let alarmOsc = null;
+function startAlarm() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  alarmOsc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  alarmOsc.frequency.value = 800;
+  alarmOsc.connect(gain);
+  gain.connect(ctx.destination);
+  gain.gain.value = 0.1;
+  alarmOsc.start();
+  setInterval(() => alarmOsc.frequency.value = alarmOsc.frequency.value === 800 ? 1000 : 800, 400);
+}
+startAlarm();
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space' && state === 'alarm') {
+    if (alarmOsc) alarmOsc.stop();
+    document.getElementById('alarmScreen').classList.add('hidden');
+    state = 'room';
+    buildRoom();
+  }
+  if (e.code === 'Space' && state === 'lecture_sleep') {
+    blackScreen(2000, () => {
+      showText('Пара закончилась', 'Вы проснулись. Можно вставать и идти к выходу.');
+      state = 'auditorium_after';
+    });
+  }
+  if (e.code === 'KeyE') interact();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+function showChoice(title, options) {
+  const scr = document.getElementById('choiceScreen');
+  document.getElementById('choiceTitle').textContent = title;
+  const btns = document.getElementById('choiceButtons');
+  btns.innerHTML = '';
+  options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.label;
+    b.onclick = () => { scr.classList.add('hidden'); opt.action(); };
+    btns.appendChild(b);
+  });
+  scr.classList.remove('hidden');
+}
+
+function showText(title, body) {
+  document.getElementById('textTitle').textContent = title;
+  document.getElementById('textBody').textContent = body;
+  document.getElementById('textScreen').classList.remove('hidden');
+  document.getElementById('textOk').onclick = () => document.getElementById('textScreen').classList.add('hidden');
+}
+
+function blackScreen(ms, cb) {
+  document.getElementById('blackScreen').classList.remove('hidden');
+  setTimeout(() => {
+    document.getElementById('blackScreen').classList.add('hidden');
+    if (cb) cb();
+  }, ms);
+}
+
+function buildRoom() {
+  clearScene();
+  scene.background = new THREE.Color(0x222233);
+  // Floor
+  addBox(10, 0.1, 10, 0x555555, 0, 0, 0);
+  // Walls
+  addBox(10, 3, 0.2, 0x888888, 0, 1.5, -5);
+  addBox(10, 3, 0.2, 0x888888, 0, 1.5, 5);
+  addBox(0.2, 3, 10, 0x888888, -5, 1.5, 0);
+  addBox(0.2, 3, 10, 0x888888, 5, 1.5, 0);
+  // Bed
+  addBox(2, 0.4, 1.2, 0x8b4513, -2, 0.3, -2);
+  addBox(2, 0.2, 1.2, 0xffffff, -2, 0.6, -2);
+  // Desk
+  addBox(1.5, 0.8, 0.7, 0x333333, 2, 0.4, -3);
+  // Wardrobe
+  addBox(1.2, 2.2, 0.6, 0x654321, -3.5, 1.1, 2);
+  // Mirror
+  addBox(1, 1.5, 0.05, 0xaaaaaa, 3.5, 1.2, 0);
+  // Door
+  addBox(1.2, 2.2, 0.1, 0x8b4513, 0, 1.1, 4.8);
+  player.position.set(0, 0, 0);
+  camera.position.set(0, 1.6, 3);
+  showText('Комната', 'Вы проснулись. Подойдите к шкафу (E) чтобы выбрать одежду.');
+}
+
+function buildCity(near) {
+  clearScene();
+  scene.background = new THREE.Color(0x87ceeb);
+  // Road
+  for (let i = -50; i < 50; i += 10) {
+    addBox(6, 0.1, 20, 0x333333, 0, 0, i);
+  }
+  // Buildings
+  for (let i = 0; i < 12; i++) {
+    const x = (i % 2 === 0 ? 8 : -8);
+    const z = -40 + i * 8;
+    addBox(4, 4 + Math.random()*6, 4, Math.random()*0xffffff, x, 2, z);
+  }
+  // Special building
+  if (near === 'institute') {
+    addBox(12, 8, 8, 0x446688, 12, 4, 0);
+  } else {
+    addBox(15, 10, 10, 0xffcc00, 15, 5, 0); // Beeline-ish
+  }
+  // Other cars
+  for (let i = 0; i < 5; i++) {
+    const c = addBox(2, 1, 4, Math.random()*0xffffff, -4 + Math.random()*8, 0.5, -30 + i*12);
+    c.userData.speed = 0.05 + Math.random()*0.1;
+    cityCars.push(c);
+  }
+  player.position.set(0, 0, 10);
+  carMode = true;
+  currentCar = addBox(2.2, 1, 4.5, 0x111111, 0, 0.5, 10);
+  player.visible = false;
+}
+
+function buildAuditorium() {
+  clearScene();
+  scene.background = new THREE.Color(0x333344);
+  addBox(12, 0.1, 16, 0x555555, 0, 0, 0);
+  // Desks
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 5; c++) {
+      addBox(1.2, 0.8, 0.6, 0x8b4513, -4 + c*2, 0.4, -4 + r*3);
+    }
+  }
+  // Board
+  addBox(6, 2, 0.1, 0x222222, 0, 1.5, -7.5);
+  player.position.set(0, 0, 5);
+  carMode = false;
+  player.visible = true;
+  showText('Аудитория', 'Подойдите к парте в конце (ближе к доске) и нажмите E чтобы сесть.');
+}
+
+function buildOffice() {
+  clearScene();
+  scene.background = new THREE.Color(0xeeeeee);
+  addBox(20, 0.1, 16, 0xcccccc, 0, 0, 0);
+  // 10 desks
+  for (let i = 0; i < 10; i++) {
+    const x = -8 + (i % 5) * 4;
+    const z = -4 + Math.floor(i / 5) * 6;
+    addBox(2, 0.8, 1, 0x333333, x, 0.4, z); // desk
+    // dual monitors
+    addBox(0.8, 0.6, 0.05, 0x000000, x-0.4, 1.2, z);
+    addBox(0.8, 0.6, 0.05, 0x000000, x+0.4, 1.2, z);
+    // Beeline text on screens (simple colored)
+    addBox(0.6, 0.4, 0.02, 0xffcc00, x-0.4, 1.2, z+0.03);
+    addBox(0.6, 0.4, 0.02, 0xffcc00, x+0.4, 1.2, z+0.03);
+  }
+  player.position.set(0, 0, 6);
+  showText('Офис Билайн', 'Подойдите к своему рабочему месту и нажмите E чтобы сесть и включить компьютер.');
+}
+
+function interact() {
+  if (state === 'room') {
+    // Simple proximity check
+    if (Math.abs(player.position.x + 3.5) < 1.5 && Math.abs(player.position.z - 2) < 1.5) {
+      showChoice('Что надеть?', [
+        {label: 'Чёрный костюм', action: () => { clothes = 'suit'; body.material.color.set(0x111111); showText('Зеркало', 'Вы в чёрном костюме. Выглядит строго.'); }},
+        {label: 'Серые джинсы + футболка', action: () => { clothes = 'casual'; body.material.color.set(0x666666); showText('Зеркало', 'Джинсы и футболка. Удобно.'); }}
+      ]);
+    } else if (Math.abs(player.position.z - 4.8) < 1 && Math.abs(player.position.x) < 1) {
+      showChoice('Обувь у двери', [
+        {label: 'Чёрные туфли', action: () => { shoes = 'shoes'; goGarage(); }},
+        {label: 'Белые кроссовки', action: () => { shoes = 'sneakers'; goGarage(); }}
+      ]);
+    }
+  } else if (state === 'auditorium') {
+    if (player.position.z < -2) {
+      state = 'lecture_sleep';
+      showText('Поспать на паре', 'Нажмите ПРОБЕЛ чтобы поспать.');
+    }
+  } else if (state === 'auditorium_after') {
+    if (player.position.z > 4) {
+      blackScreen(1500, () => {
+        state = 'city2';
+        buildCity('office');
+        showText('Улица', 'Вы у машины. Садитесь и едьте к офису Билайн.');
+      });
+    }
+  } else if (state === 'office') {
+    state = 'pc';
+    document.getElementById('nameScreen').classList.remove('hidden');
+  }
+}
+
+function goGarage() {
+  blackScreen(800, () => {
+    state = 'garage';
+    showText('Гараж', 'Вы сели в машину. Нажмите E чтобы выехать.');
+  });
+}
+
+document.getElementById('loginBtn').onclick = () => {
+  const fn = document.getElementById('firstName').value;
+  const ln = document.getElementById('lastName').value;
+  if (fn.toLowerCase().includes('достон') && ln.toLowerCase().includes('хайдаров')) {
+    document.getElementById('nameScreen').classList.add('hidden');
+    showText('Компьютер включён', 'Добро пожаловать, Достон Хайдаров! Нажмите E чтобы открыть Beeline Чаты.');
+    state = 'desktop';
+  } else {
+    alert('Неверные данные. Попробуйте Достон Хайдаров');
+  }
+};
+
+function openChat() {
+  document.getElementById('chatScreen').classList.remove('hidden');
+}
+function closeChat() {
+  document.getElementById('chatScreen').classList.add('hidden');
+}
+function sendChat() {
+  const inp = document.getElementById('chatInput');
+  if (inp.value.trim()) {
+    document.getElementById('chatMessages').innerHTML += '<div>Вы: ' + inp.value + '</div>';
+    inp.value = '';
+  }
+}
+
+// Main loop
+function animate() {
+  requestAnimationFrame(animate);
+  const speed = carMode ? 0.15 : 0.08;
+  if (keys['KeyW'] || keys['ArrowUp']) velocity.z = -speed;
+  else if (keys['KeyS'] || keys['ArrowDown']) velocity.z = speed;
+  else velocity.z = 0;
+  if (keys['KeyA'] || keys['ArrowLeft']) velocity.x = -speed;
+  else if (keys['KeyD'] || keys['ArrowRight']) velocity.x = speed;
+  else velocity.x = 0;
+
+  if (carMode) {
+    currentCar.position.add(velocity);
+    player.position.copy(currentCar.position);
+    camera.position.set(currentCar.position.x, 3, currentCar.position.z + 6);
+    camera.lookAt(currentCar.position);
+    // other cars
+    cityCars.forEach(c => {
+      c.position.z += c.userData.speed;
+      if (c.position.z > 40) c.position.z = -40;
+    });
+  } else {
+    player.position.add(velocity);
+    camera.position.set(player.position.x, 1.6, player.position.z + 3);
+    camera.lookAt(player.position);
+  }
+
+  // State transitions by position / key
+  if (state === 'garage' && keys['KeyE']) {
+    blackScreen(1500, () => {
+      state = 'city1';
+      buildCity('institute');
+      showText('Город', 'Вы у института. Подъедьте к зданию и нажмите E чтобы войти.');
+    });
+  }
+  if (state === 'city1' && keys['KeyE'] && Math.abs(player.position.x - 12) < 5 && Math.abs(player.position.z) < 5) {
+    blackScreen(1000, () => {
+      state = 'auditorium';
+      buildAuditorium();
+    });
+  }
+  if (state === 'desktop' && keys['KeyE']) openChat();
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
